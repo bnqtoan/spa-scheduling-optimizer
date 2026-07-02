@@ -1,0 +1,14 @@
+name = "spa-scheduling-optimizer"
+main = "src/server/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "dist/client"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "spa-db"
+database_id = "152ed021-0ef1-4e1b-90e9-964d8ca88677"
