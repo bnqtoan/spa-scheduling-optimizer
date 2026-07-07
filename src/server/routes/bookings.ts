@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { and, eq, ne } from 'drizzle-orm'
 import { z } from 'zod'
 import type { Env } from '../app'
@@ -13,8 +14,28 @@ import {
   workingHours,
 } from '../db/schema'
 import { contains, overlaps, weekdayOf, type Interval } from '../lib/slots'
+import {
+  AUTH_FORBIDDEN,
+  BUSINESS_SLOT_OVERLAP,
+  VALIDATION_INVALID_INPUT,
+  VALIDATION_OUTSIDE_HOURS,
+  VALIDATION_SKILL_MISMATCH,
+  VALIDATION_TIME_OFF,
+} from '../lib/errors'
+import { requireAuth, requireRole } from '../middleware/auth'
+import { scopeTechnicianId } from '../lib/rbac'
+import { listAuditForBooking, writeAudit } from '../lib/audit'
 
 const app = new Hono<Env>()
+
+// requireAuth is typed against the middleware's minimal AuthEnv (Bindings = {DB});
+// our app Env additionally has ASSETS and Hono's Context is invariant on
+// Bindings, so a direct call doesn't type-check. This thin adapter bridges the
+// two without touching the shared middleware (Task 15). Behavior is identical:
+// throws AUTH_UNAUTHORIZED if there is no authenticated user.
+function currentUser(c: Context<Env, string>) {
+  return requireAuth(c as unknown as Parameters<typeof requireAuth>[0])
+}
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -76,13 +97,14 @@ function bookingsWithJoins(db: ReturnType<typeof getDb>) {
 // ---------------------------------------------------------------------------
 // Core server-side validation, shared by POST (create) and PATCH (reschedule).
 //
-// Returns an error {status, body} to short-circuit, or null if valid.
+// Throws an AppError to short-circuit, or returns normally if valid.
 // Ordering matters and is intentional (cheap → conflict-critical):
-//   1. skill mismatch          -> 422
-//   2. outside working hours   -> 422
-//   3. overlaps time_off       -> 422
-//   4. overlaps a live booking -> 409  (the double-book guard)
+//   1. skill mismatch          -> VALIDATION_SKILL_MISMATCH 422
+//   2. outside working hours   -> VALIDATION_OUTSIDE_HOURS   422
+//   3. overlaps time_off       -> VALIDATION_TIME_OFF        422
+//   4. overlaps a live booking -> BUSINESS_SLOT_OVERLAP      409  (double-book guard)
 // `ignoreBookingId` excludes the row being rescheduled from the overlap check.
+// AppError is caught by app.onError(appOnError) → standardized JSON + log.
 // ---------------------------------------------------------------------------
 async function validateSlot(
   db: ReturnType<typeof getDb>,
@@ -94,13 +116,13 @@ async function validateSlot(
     endMin: number
   },
   ignoreBookingId?: number,
-): Promise<{ status: 422 | 409; body: { error: string; code: string } } | null> {
+): Promise<void> {
   const slot: Interval = { start: input.startMin, end: input.endMin }
 
   // Fetch the service to know the required skill.
   const [service] = await db.select().from(services).where(eq(services.id, input.serviceId)).limit(1)
   if (!service) {
-    return { status: 422, body: { error: 'service not found', code: 'service_not_found' } }
+    throw VALIDATION_INVALID_INPUT('service not found', { context: { serviceId: input.serviceId } })
   }
 
   // 1) Technician must have the service's required skill.
@@ -115,10 +137,9 @@ async function validateSlot(
     )
     .limit(1)
   if (!skillRow) {
-    return {
-      status: 422,
-      body: { error: 'technician lacks the required skill for this service', code: 'skill_mismatch' },
-    }
+    throw VALIDATION_SKILL_MISMATCH(undefined, {
+      context: { technicianId: input.technicianId, skillId: service.skillId },
+    })
   }
 
   // 2) Slot must fit inside the tech's working hours for that weekday.
@@ -131,10 +152,9 @@ async function validateSlot(
     )
   const withinHours = hours.some((h) => contains({ start: h.startMin, end: h.endMin }, slot))
   if (!withinHours) {
-    return {
-      status: 422,
-      body: { error: 'slot is outside the technician working hours', code: 'outside_working_hours' },
-    }
+    throw VALIDATION_OUTSIDE_HOURS(undefined, {
+      context: { technicianId: input.technicianId, weekday, slot },
+    })
   }
 
   // 3) Slot must not overlap any time_off for that tech on that date.
@@ -148,10 +168,9 @@ async function validateSlot(
     return overlaps(slot, { start: o.startMin, end: o.endMin })
   })
   if (hitsTimeOff) {
-    return {
-      status: 422,
-      body: { error: 'slot overlaps the technician time off', code: 'time_off' },
-    }
+    throw VALIDATION_TIME_OFF(undefined, {
+      context: { technicianId: input.technicianId, date: input.date },
+    })
   }
 
   // 4) Slot must not overlap any non-cancelled booking for that tech/date.
@@ -171,13 +190,10 @@ async function validateSlot(
       b.id !== ignoreBookingId && overlaps(slot, { start: b.startMin, end: b.endMin }),
   )
   if (conflict) {
-    return {
-      status: 409,
-      body: { error: 'slot overlaps an existing booking', code: 'double_booking' },
-    }
+    throw BUSINESS_SLOT_OVERLAP(undefined, {
+      context: { technicianId: input.technicianId, date: input.date, slot },
+    })
   }
-
-  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -212,12 +228,20 @@ app.get('/', async (c) => {
     conditions.push(eq(bookings.date, date))
   }
 
+  // Parse any client-requested technician filter, then let RBAC scope it:
+  // a technician user is force-restricted to their own technicianId (403 if
+  // they request another); admin/receptionist see whatever they ask for.
+  let requestedTech: number | undefined
   if (technicianId !== undefined) {
     const parsed = idParamSchema.safeParse(technicianId)
     if (!parsed.success) {
       return c.json({ error: 'technicianId must be a positive integer' }, 400)
     }
-    conditions.push(eq(bookings.technicianId, parsed.data))
+    requestedTech = parsed.data
+  }
+  const scopedTech = scopeTechnicianId(c.get('user'), requestedTech)
+  if (scopedTech !== undefined) {
+    conditions.push(eq(bookings.technicianId, scopedTech))
   }
 
   if (status !== undefined) {
@@ -265,6 +289,9 @@ app.post('/', async (c) => {
   }
   const input = parsed.data
   const db = getDb(c.env.DB)
+  // CREATE is allowed for authed staff (receptionist/admin) AND unauthed
+  // customers (PRD self-service /book). Stamp the actor; null = customer.
+  const createdByUserId = c.get('user')?.id ?? null
 
   // Derive endMin from the service duration.
   const [service] = await db.select().from(services).where(eq(services.id, input.serviceId)).limit(1)
@@ -284,10 +311,7 @@ app.post('/', async (c) => {
     endMin,
   }
 
-  const invalid = await validateSlot(db, slotInput)
-  if (invalid) {
-    return c.json(invalid.body, invalid.status)
-  }
+  await validateSlot(db, slotInput)
 
   // Insert with a generated code; re-check overlap right before each attempt
   // and retry on code-collision (increment seq).
@@ -296,10 +320,7 @@ app.post('/', async (c) => {
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     // Final overlap re-check immediately before insert — shrinks the race window.
-    const raceCheck = await validateSlot(db, slotInput)
-    if (raceCheck) {
-      return c.json(raceCheck.body, raceCheck.status)
-    }
+    await validateSlot(db, slotInput)
 
     const code = codeFor(input.date, baseSeq + attempt)
     try {
@@ -316,8 +337,17 @@ app.post('/', async (c) => {
           startMin: input.startMin,
           endMin,
           status: 'scheduled',
+          createdByUserId,
         })
         .returning()
+
+      // Audit AFTER a successful insert; best-effort (won't fail the create).
+      await writeAudit(db, {
+        bookingId: created.id,
+        userId: createdByUserId,
+        action: 'create',
+        newValues: created,
+      })
 
       const [row] = await bookingsWithJoins(db).where(eq(bookings.id, created.id)).limit(1)
       return c.json(row ? flatten(row) : created, 201)
@@ -339,6 +369,12 @@ app.post('/', async (c) => {
 // this booking excluded from the overlap check. Cancelling frees the slot.
 // ---------------------------------------------------------------------------
 app.patch('/:id', async (c) => {
+  // UPDATE/reschedule/status-change is staff-only (receptionist/admin).
+  const actor = currentUser(c)
+  if (actor.role !== 'admin' && actor.role !== 'receptionist') {
+    throw AUTH_FORBIDDEN('only staff may modify bookings', { context: { role: actor.role } })
+  }
+
   const parsedId = idParamSchema.safeParse(c.req.param('id'))
   if (!parsedId.success) {
     return c.json({ error: 'invalid id' }, 400)
@@ -387,10 +423,7 @@ app.patch('/:id', async (c) => {
     // booking occupies nothing.
     const nextStatus = patch.status ?? existing.status
     if (nextStatus !== 'cancelled') {
-      const invalid = await validateSlot(db, { ...next, endMin }, existing.id)
-      if (invalid) {
-        return c.json(invalid.body, invalid.status)
-      }
+      await validateSlot(db, { ...next, endMin }, existing.id)
     }
   }
 
@@ -407,6 +440,18 @@ app.patch('/:id', async (c) => {
 
   await db.update(bookings).set(updateValues).where(eq(bookings.id, parsedId.data))
 
+  // Audit the change: old = pre-update row, new = the fields we set.
+  // A cancel via PATCH(status:'cancelled') records action 'cancel'; any other
+  // change records 'update'. Best-effort.
+  const isCancel = patch.status === 'cancelled' && existing.status !== 'cancelled'
+  await writeAudit(db, {
+    bookingId: existing.id,
+    userId: actor.id,
+    action: isCancel ? 'cancel' : 'update',
+    oldValues: existing,
+    newValues: updateValues,
+  })
+
   const [row] = await bookingsWithJoins(db).where(eq(bookings.id, parsedId.data)).limit(1)
   return c.json(row ? flatten(row) : existing)
 })
@@ -422,6 +467,12 @@ app.patch('/:id', async (c) => {
 // booking is idempotent (200 both times).
 // ---------------------------------------------------------------------------
 app.delete('/:id', async (c) => {
+  // CANCEL is staff-only (receptionist/admin).
+  const actor = currentUser(c)
+  if (actor.role !== 'admin' && actor.role !== 'receptionist') {
+    throw AUTH_FORBIDDEN('only staff may cancel bookings', { context: { role: actor.role } })
+  }
+
   const parsedId = idParamSchema.safeParse(c.req.param('id'))
   if (!parsedId.success) {
     return c.json({ error: 'invalid id' }, 400)
@@ -434,7 +485,33 @@ app.delete('/:id', async (c) => {
   }
 
   await db.update(bookings).set({ status: 'cancelled' }).where(eq(bookings.id, parsedId.data))
+
+  // Audit only a real state change (idempotent re-cancel writes nothing).
+  if (existing.status !== 'cancelled') {
+    await writeAudit(db, {
+      bookingId: existing.id,
+      userId: actor.id,
+      action: 'cancel',
+      oldValues: { status: existing.status },
+      newValues: { status: 'cancelled' },
+    })
+  }
   return c.json({ ok: true, status: 'cancelled' })
+})
+
+// ---------------------------------------------------------------------------
+// GET /:id/audit — admin-only "who did what" timeline for a booking.
+// Newest first (ordered by audit id desc), joined with the acting username.
+// ---------------------------------------------------------------------------
+app.get('/:id/audit', requireRole('admin'), async (c) => {
+  const parsedId = idParamSchema.safeParse(c.req.param('id'))
+  if (!parsedId.success) {
+    return c.json({ error: 'invalid id' }, 400)
+  }
+
+  const db = getDb(c.env.DB)
+  const rows = await listAuditForBooking(db, parsedId.data)
+  return c.json(rows)
 })
 
 export default app
