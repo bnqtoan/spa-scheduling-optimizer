@@ -37,6 +37,8 @@ export interface Service {
   skill: Skill | null
 }
 
+export type PaymentStatus = 'unpaid' | 'paid'
+
 export interface Booking {
   id: number
   code: string
@@ -44,7 +46,10 @@ export interface Booking {
   startMin: number
   endMin: number
   status: BookingStatus
+  paymentStatus: PaymentStatus
   customerName: string
+  customerPhone?: string
+  note?: string | null
   technician: { id: number; name: string }
   service: { id: number; name: string; durationMin: number }
 }
@@ -386,5 +391,56 @@ export function useDeleteTimeOff() {
     mutationFn: (id: number) =>
       apiFetch<{ ok: true }>(`/schedule/time-off/${id}`, { method: 'DELETE' }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['time-off'] }),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Booking mutations (Task 22) — cancel / update / single-booking lookup.
+// The bookings list is keyed per-date; on success we invalidate every
+// ['bookings', ...] query since we don't always know which date(s) a
+// reschedule touches (old date vs new date).
+// ---------------------------------------------------------------------------
+
+function invalidateBookings(queryClient: ReturnType<typeof useQueryClient>) {
+  queryClient.invalidateQueries({ queryKey: ['bookings'] })
+}
+
+/** Single booking by id (joined), for the detail dialog. */
+export function useBooking(id: number | null): UseQueryResult<Booking, ApiError> {
+  return useQuery({
+    queryKey: ['bookings', 'detail', id],
+    queryFn: () => apiFetch<Booking>(`/bookings/${id}`),
+    enabled: id !== null,
+  })
+}
+
+/** Cancel (soft) a booking. DELETE /bookings/:id. */
+export function useCancelBooking() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ ok: true; status: 'cancelled' }>(`/bookings/${id}`, { method: 'DELETE' }),
+    onSuccess: () => invalidateBookings(queryClient),
+  })
+}
+
+export interface UpdateBookingInput {
+  status?: BookingStatus
+  technicianId?: number
+  serviceId?: number
+  date?: string
+  startMin?: number
+  customerName?: string
+  customerPhone?: string
+  note?: string | null
+}
+
+/** Status change and/or reschedule/edit. PATCH /bookings/:id. */
+export function useUpdateBooking() {
+  const queryClient = useQueryClient()
+  return useMutation<Booking, ApiError, UpdateBookingInput & { id: number }>({
+    mutationFn: ({ id, ...input }) =>
+      apiFetch<Booking>(`/bookings/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
+    onSuccess: () => invalidateBookings(queryClient),
   })
 }

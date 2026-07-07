@@ -13,10 +13,21 @@ import {
 } from '@/components/ui/table'
 import { DateNav } from '@/components/dashboard/date-nav'
 import { STATUS_COLORS, STATUS_LABEL } from '@/components/dashboard/status'
-import { useBookings, type Booking } from '@/lib/api'
+import { useBookings, useCancelBooking, useUpdateBooking, type Booking } from '@/lib/api'
 import { useMe } from '@/lib/auth-api'
 import { todayISO, fmtRange } from '@/lib/time'
 import { AuditDialog } from '@/components/admin/audit-dialog'
+import { BookingDialog } from '@/components/admin/booking-dialog'
+
+const PAYMENT_LABEL: Record<'unpaid' | 'paid', string> = {
+  paid: 'Đã thanh toán',
+  unpaid: 'Chưa thanh toán',
+}
+
+const PAYMENT_COLORS: Record<'unpaid' | 'paid', { bg: string; text: string }> = {
+  paid: { bg: '#dcfce7', text: '#166534' },
+  unpaid: { bg: '#f3f4f6', text: '#4b5563' },
+}
 
 export function BookingsPage() {
   const [date, setDate] = useState(todayISO())
@@ -25,8 +36,21 @@ export function BookingsPage() {
   const isAdmin = meQuery.data?.role === 'admin'
 
   const [auditBooking, setAuditBooking] = useState<Booking | null>(null)
+  const [detailBookingId, setDetailBookingId] = useState<number | null>(null)
+
+  const cancelBooking = useCancelBooking()
+  const updateBooking = useUpdateBooking()
 
   const bookings = (bookingsQuery.data ?? []).slice().sort((a, b) => a.startMin - b.startMin)
+
+  function handleCancel(b: Booking) {
+    if (!window.confirm('Hủy lịch hẹn này?')) return
+    cancelBooking.mutate(b.id)
+  }
+
+  function handleComplete(b: Booking) {
+    updateBooking.mutate({ id: b.id, status: 'completed' })
+  }
 
   return (
     <>
@@ -57,14 +81,21 @@ export function BookingsPage() {
                     <TableHead>Dịch vụ</TableHead>
                     <TableHead>KTV</TableHead>
                     <TableHead>Trạng thái</TableHead>
-                    {isAdmin && <TableHead className="text-right">Nhật ký</TableHead>}
+                    <TableHead>Thanh toán</TableHead>
+                    <TableHead className="text-right">Thao tác</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {bookings.map((b) => {
                     const c = STATUS_COLORS[b.status]
+                    const pc = PAYMENT_COLORS[b.paymentStatus]
+                    const isFinal = b.status === 'cancelled' || b.status === 'completed'
                     return (
-                      <TableRow key={b.id}>
+                      <TableRow
+                        key={b.id}
+                        className="cursor-pointer"
+                        onClick={() => setDetailBookingId(b.id)}
+                      >
                         <TableCell className="font-mono text-xs">{b.code}</TableCell>
                         <TableCell>{fmtRange(b.startMin, b.endMin)}</TableCell>
                         <TableCell>{b.customerName}</TableCell>
@@ -78,18 +109,59 @@ export function BookingsPage() {
                             {STATUS_LABEL[b.status]}
                           </span>
                         </TableCell>
-                        {isAdmin && (
-                          <TableCell className="text-right">
+                        <TableCell>
+                          <span
+                            className="rounded-full px-2.5 py-1 text-xs font-medium"
+                            style={{ backgroundColor: pc.bg, color: pc.text }}
+                          >
+                            {PAYMENT_LABEL[b.paymentStatus]}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div
+                            className="flex items-center justify-end gap-1"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {!isFinal && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleComplete(b)}
+                                disabled={updateBooking.isPending}
+                              >
+                                Hoàn thành
+                              </Button>
+                            )}
+                            {!isFinal && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-destructive hover:text-destructive"
+                                onClick={() => handleCancel(b)}
+                                disabled={cancelBooking.isPending}
+                              >
+                                Hủy
+                              </Button>
+                            )}
                             <Button
                               variant="ghost"
-                              size="icon-sm"
-                              aria-label="Xem nhật ký"
-                              onClick={() => setAuditBooking(b)}
+                              size="sm"
+                              onClick={() => setDetailBookingId(b.id)}
                             >
-                              <History className="size-4" />
+                              Chi tiết
                             </Button>
-                          </TableCell>
-                        )}
+                            {isAdmin && (
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label="Xem nhật ký"
+                                onClick={() => setAuditBooking(b)}
+                              >
+                                <History className="size-4" />
+                              </Button>
+                            )}
+                          </div>
+                        </TableCell>
                       </TableRow>
                     )
                   })}
@@ -106,6 +178,14 @@ export function BookingsPage() {
         open={auditBooking !== null}
         onOpenChange={(open) => {
           if (!open) setAuditBooking(null)
+        }}
+      />
+
+      <BookingDialog
+        bookingId={detailBookingId}
+        open={detailBookingId !== null}
+        onOpenChange={(open) => {
+          if (!open) setDetailBookingId(null)
         }}
       />
     </>

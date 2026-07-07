@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import FullCalendar from '@fullcalendar/react'
 import resourceTimelinePlugin from '@fullcalendar/resource-timeline'
 import interactionPlugin from '@fullcalendar/interaction'
-import type { EventContentArg, EventInput } from '@fullcalendar/core'
+import type { EventClickArg, EventContentArg, EventInput } from '@fullcalendar/core'
 import type { ResourceInput } from '@fullcalendar/resource'
 import type { Booking, Technician } from '@/lib/api'
 import { minToDate, minToSlot, fmtRange, WORK_START_MIN, WORK_END_MIN } from '@/lib/time'
@@ -15,10 +15,12 @@ export function TimelineCalendar({
   date,
   technicians,
   bookings,
+  onEventClick,
 }: {
   date: string
   technicians: Technician[]
   bookings: Booking[]
+  onEventClick?: (bookingId: number) => void
 }) {
   const resources = useMemo<ResourceInput[]>(
     () =>
@@ -77,6 +79,11 @@ export function TimelineCalendar({
         expandRows
         resourceLabelContent={renderResource}
         eventContent={renderEvent}
+        eventClick={
+          onEventClick
+            ? (arg: EventClickArg) => onEventClick(Number(arg.event.id))
+            : undefined
+        }
       />
     </div>
   )
