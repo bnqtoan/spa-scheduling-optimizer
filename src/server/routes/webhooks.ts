@@ -27,11 +27,15 @@ const app = new Hono<Env>()
 // ---------------------------------------------------------------------------
 app.post('/sepay', async (c) => {
   // 1) Verify the Apikey header. Format: "Authorization: Apikey <token>".
-  const header = c.req.header('authorization') ?? ''
-  const token = header.replace(/^Apikey\s+/i, '').trim()
+  // When SEPAY_WEBHOOK_TOKEN is unset the endpoint is OPEN (test mode — anyone
+  // who knows the URL can post a "paid" event). Set the secret to enforce auth.
   const expected = c.env.SEPAY_WEBHOOK_TOKEN
-  if (!expected || token !== expected) {
-    throw AUTH_UNAUTHORIZED('invalid SePay webhook apikey')
+  if (expected) {
+    const header = c.req.header('authorization') ?? ''
+    const token = header.replace(/^Apikey\s+/i, '').trim()
+    if (token !== expected) {
+      throw AUTH_UNAUTHORIZED('invalid SePay webhook apikey')
+    }
   }
 
   // 2) Parse body defensively.
