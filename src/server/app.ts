@@ -5,6 +5,7 @@ import schedule from './routes/schedule'
 import bookings from './routes/bookings'
 import slots from './routes/slots'
 import auth from './routes/auth'
+import webhooks from './routes/webhooks'
 import { appOnError, attachRequestId } from './lib/errors'
 import { authMiddleware, type AuthVariables } from './middleware/auth'
 
@@ -12,6 +13,11 @@ export type Env = {
   Bindings: {
     DB: D1Database
     ASSETS: Fetcher
+    // Phase 2 — SePay payment secrets (set via wrangler secret / .dev.vars)
+    SEPAY_WEBHOOK_TOKEN: string
+    SEPAY_BANK: string
+    SEPAY_ACCOUNT_NUMBER: string
+    SEPAY_ACCOUNT_NAME: string
   }
   Variables: AuthVariables
 }
@@ -30,6 +36,7 @@ app.route('/api/services', services)
 app.route('/api/schedule', schedule)
 app.route('/api/bookings', bookings)
 app.route('/api/slots', slots)
+app.route('/api/webhooks', webhooks)
 
 app.onError(appOnError)
 

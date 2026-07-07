@@ -1,18 +1,20 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
-import { and, eq, ne } from 'drizzle-orm'
+import { and, desc, eq, ne } from 'drizzle-orm'
 import { z } from 'zod'
 import type { Env } from '../app'
 import { getDb } from '../db/client'
 import {
   bookings,
   bookingStatusValues,
+  payments,
   services,
   technicians,
   technicianSkills,
   timeOff,
   workingHours,
 } from '../db/schema'
+import { buildVietQrUrl, generatePaymentRef } from '../lib/payment'
 import { contains, overlaps, weekdayOf, type Interval } from '../lib/slots'
 import {
   AUTH_FORBIDDEN,
@@ -25,6 +27,7 @@ import {
 import { requireAuth, requireRole } from '../middleware/auth'
 import { scopeTechnicianId } from '../lib/rbac'
 import { listAuditForBooking, writeAudit } from '../lib/audit'
+import { logStructured } from '../lib/errors'
 
 const app = new Hono<Env>()
 
@@ -212,6 +215,52 @@ async function countBookingsOnDate(db: ReturnType<typeof getDb>, date: string): 
 }
 
 // ---------------------------------------------------------------------------
+// Insert a pending SePay payment row for a booking. Returns the paymentRef on
+// success (so the caller can denormalize it onto the booking), or null on
+// failure. Retries a few times on the paymentRef unique-index collision (the
+// suffix is crypto-random so a repeat is rare). Best-effort: never throws — a
+// payment-row failure must not fail an already-committed booking.
+// ---------------------------------------------------------------------------
+async function createPaymentForBooking(
+  db: ReturnType<typeof getDb>,
+  bookingId: number,
+  amount: number,
+): Promise<string | null> {
+  const MAX_ATTEMPTS = 5
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const paymentRef = generatePaymentRef(bookingId)
+    try {
+      await db.insert(payments).values({
+        bookingId,
+        paymentRef,
+        amount,
+        method: 'sepay',
+        status: 'pending',
+      })
+      return paymentRef
+    } catch (err) {
+      if (String(err).includes('UNIQUE') || String(err).includes('constraint')) {
+        continue // ref collision — regenerate the suffix and retry
+      }
+      logStructured('ERROR', {
+        category: 'DB',
+        code: 'PAYMENT_CREATE_FAILED',
+        message: 'failed to create payment row for booking',
+        context: { bookingId, error: String(err) },
+      })
+      return null
+    }
+  }
+  logStructured('ERROR', {
+    category: 'DB',
+    code: 'PAYMENT_REF_EXHAUSTED',
+    message: 'could not generate a unique paymentRef',
+    context: { bookingId },
+  })
+  return null
+}
+
+// ---------------------------------------------------------------------------
 // GET / — list, filterable by ?date=&technicianId=&status=
 // Excludes cancelled by default unless an explicit status is requested.
 // ---------------------------------------------------------------------------
@@ -348,6 +397,15 @@ app.post('/', async (c) => {
         action: 'create',
         newValues: created,
       })
+
+      // Create the pending SePay payment for this booking (amount = service
+      // price) and denormalize the paymentRef onto the booking for QR display.
+      // Best-effort: a payment-row failure must not fail the (already committed)
+      // booking; the ref is regenerated + retried on the unique-index collision.
+      const paymentRef = await createPaymentForBooking(db, created.id, service.price)
+      if (paymentRef) {
+        await db.update(bookings).set({ paymentRef }).where(eq(bookings.id, created.id))
+      }
 
       const [row] = await bookingsWithJoins(db).where(eq(bookings.id, created.id)).limit(1)
       return c.json(row ? flatten(row) : created, 201)
@@ -512,6 +570,44 @@ app.get('/:id/audit', requireRole('admin'), async (c) => {
   const db = getDb(c.env.DB)
   const rows = await listAuditForBooking(db, parsedId.data)
   return c.json(rows)
+})
+
+// ---------------------------------------------------------------------------
+// GET /:id/payment — the payment info for the booking's VietQR display.
+// Returns { paymentRef, amount, status, qrUrl }. Public (customer self-service
+// after booking). qrUrl is built from the SEPAY_* env + the paymentRef.
+// ---------------------------------------------------------------------------
+app.get('/:id/payment', async (c) => {
+  const parsedId = idParamSchema.safeParse(c.req.param('id'))
+  if (!parsedId.success) {
+    return c.json({ error: 'invalid id' }, 400)
+  }
+
+  const db = getDb(c.env.DB)
+  const [payment] = await db
+    .select()
+    .from(payments)
+    .where(eq(payments.bookingId, parsedId.data))
+    .orderBy(desc(payments.id))
+    .limit(1)
+  if (!payment) {
+    return c.json({ error: 'payment not found' }, 404)
+  }
+
+  const qrUrl = buildVietQrUrl({
+    bank: c.env.SEPAY_BANK,
+    accountNumber: c.env.SEPAY_ACCOUNT_NUMBER,
+    accountName: c.env.SEPAY_ACCOUNT_NAME,
+    amount: payment.amount,
+    content: payment.paymentRef,
+  })
+
+  return c.json({
+    paymentRef: payment.paymentRef,
+    amount: payment.amount,
+    status: payment.status,
+    qrUrl,
+  })
 })
 
 export default app
