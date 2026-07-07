@@ -72,12 +72,22 @@ export interface TimeOffEntry {
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /** Stable error code (e.g. 'AUTH_UNAUTHORIZED') when the server used the
+   * AppError taxonomy ({error:{code,category,message}}); undefined for the
+   * legacy {error: string} shape some older routes still use. */
+  code?: string
+  constructor(status: number, message: string, code?: string) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.code = code
   }
 }
+
+/** Fired whenever a request comes back 401 (session missing/expired), so
+ * guarded routes/shell can react (e.g. redirect to /login) without every
+ * caller having to check err.status individually. */
+export const AUTH_EVENT_UNAUTHORIZED = 'api:unauthorized'
 
 /** GET/POST/... against `/api${path}`, JSON in/out, throws ApiError on non-2xx. */
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -87,13 +97,24 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   })
   if (!res.ok) {
     let message = `Request failed (${res.status})`
+    let code: string | undefined
     try {
-      const body = (await res.json()) as { error?: string }
-      if (body?.error) message = typeof body.error === 'string' ? body.error : message
+      const body = (await res.json()) as { error?: string | { code?: string; message?: string } }
+      if (body?.error) {
+        if (typeof body.error === 'string') {
+          message = body.error
+        } else {
+          message = body.error.message ?? message
+          code = body.error.code
+        }
+      }
     } catch {
       /* non-JSON error body */
     }
-    throw new ApiError(res.status, message)
+    if (res.status === 401 && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(AUTH_EVENT_UNAUTHORIZED, { detail: { path } }))
+    }
+    throw new ApiError(res.status, message, code)
   }
   if (res.status === 204) return undefined as T
   return (await res.json()) as T

@@ -6,10 +6,11 @@ export const STEPS = [
   { n: 2, label: 'Khoảng thời gian' },
   { n: 3, label: 'Gợi ý lịch trống' },
   { n: 4, label: 'Thông tin khách hàng' },
-  { n: 5, label: 'Xác nhận' },
+  { n: 5, label: 'Thanh toán' },
+  { n: 6, label: 'Xác nhận' },
 ] as const
 
-export type StepNumber = 1 | 2 | 3 | 4 | 5
+export type StepNumber = 1 | 2 | 3 | 4 | 5 | 6
 
 /**
  * Left vertical stepper. Current step highlighted; completed steps show a check.

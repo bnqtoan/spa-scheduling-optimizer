@@ -14,6 +14,7 @@ import { ServiceStep } from '@/components/book/service-step'
 import { WindowStep, type WindowValue } from '@/components/book/window-step'
 import { SuggestionsStep } from '@/components/book/suggestions-step'
 import { CustomerStep, type CustomerInfo } from '@/components/book/customer-step'
+import { PaymentStep } from '@/components/book/payment-step'
 import { ConfirmationStep } from '@/components/book/confirmation-step'
 import { hhmmToMin } from '@/components/book/format'
 
@@ -48,6 +49,7 @@ type Action =
   | { type: 'pickSlot'; slot: SuggestedSlot }
   | { type: 'setCustomer'; customer: CustomerInfo }
   | { type: 'booked'; booking: CreatedBooking }
+  | { type: 'paymentDone' }
   | { type: 'slotTaken' }
   | { type: 'goto'; step: StepNumber }
   | { type: 'reset' }
@@ -86,6 +88,8 @@ function reducer(state: State, action: Action): State {
       return { ...state, customer: action.customer }
     case 'booked':
       return { ...state, booking: action.booking, step: 5 }
+    case 'paymentDone':
+      return { ...state, step: 6 }
     case 'slotTaken':
       // Slot vanished since suggestion: bounce back to step 3 with a notice.
       return {
@@ -201,7 +205,7 @@ export function BookPage() {
               )}
               <div>
                 <p className="text-xs font-medium text-primary">
-                  Bước {step}/5
+                  Bước {step}/6
                 </p>
                 <h1 className="font-heading text-xl font-semibold text-foreground">
                   {current.label}
@@ -261,6 +265,13 @@ export function BookPage() {
             )}
 
             {step === 5 && state.booking && (
+              <PaymentStep
+                bookingId={state.booking.id}
+                onDone={() => dispatch({ type: 'paymentDone' })}
+              />
+            )}
+
+            {step === 6 && state.booking && (
               <ConfirmationStep
                 booking={state.booking}
                 onReset={() => dispatch({ type: 'reset' })}

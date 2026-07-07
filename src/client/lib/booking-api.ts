@@ -121,3 +121,32 @@ export function useCreateBooking() {
       }),
   })
 }
+
+// ---------------------------------------------------------------------------
+// Payment (Phase 2) — GET /bookings/:id/payment, polled until status='paid'
+// ---------------------------------------------------------------------------
+
+export type PaymentStatus = 'pending' | 'paid' | 'failed'
+
+export interface PaymentInfo {
+  paymentRef: string
+  amount: number
+  status: PaymentStatus
+  qrUrl: string
+}
+
+/**
+ * Payment info for a booking's VietQR display. Polls every 3s (refetchInterval)
+ * until `status === 'paid'`, then stops — used by the wizard's payment step to
+ * flip to a success state once the SePay webhook reconciles.
+ */
+export function useBookingPayment(
+  bookingId: number | null,
+): UseQueryResult<PaymentInfo, ApiError> {
+  return useQuery({
+    queryKey: ['payment', bookingId],
+    queryFn: () => apiFetch<PaymentInfo>(`/bookings/${bookingId}/payment`),
+    enabled: bookingId !== null,
+    refetchInterval: (query) => (query.state.data?.status === 'paid' ? false : 3000),
+  })
+}
