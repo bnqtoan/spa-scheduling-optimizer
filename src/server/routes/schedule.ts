@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { getDb } from '../db/client'
 import { timeOff, workingHours } from '../db/schema'
 import type { Env } from '../app'
+import { scopeTechnicianId } from '../lib/rbac'
 
 const app = new Hono<Env>()
 
@@ -51,15 +52,22 @@ app.get('/working-hours', async (c) => {
   const db = getDb(c.env.DB)
   const technicianIdRaw = c.req.query('technicianId')
 
+  let requestedTech: number | undefined
   if (technicianIdRaw !== undefined) {
     const technicianId = Number(technicianIdRaw)
     if (!Number.isInteger(technicianId)) {
       return c.json({ error: 'technicianId must be an integer' }, 400)
     }
+    requestedTech = technicianId
+  }
+
+  // RBAC: a technician user only ever sees their own hours (403 on another).
+  const scopedTech = scopeTechnicianId(c.get('user'), requestedTech)
+  if (scopedTech !== undefined) {
     const rows = await db
       .select()
       .from(workingHours)
-      .where(eq(workingHours.technicianId, technicianId))
+      .where(eq(workingHours.technicianId, scopedTech))
     return c.json(rows)
   }
 
@@ -115,12 +123,18 @@ app.get('/time-off', async (c) => {
 
   const conditions = []
 
+  let requestedTech: number | undefined
   if (technicianIdRaw !== undefined) {
     const technicianId = Number(technicianIdRaw)
     if (!Number.isInteger(technicianId)) {
       return c.json({ error: 'technicianId must be an integer' }, 400)
     }
-    conditions.push(eq(timeOff.technicianId, technicianId))
+    requestedTech = technicianId
+  }
+  // RBAC: technician user scoped to own time-off (403 on another).
+  const scopedTech = scopeTechnicianId(c.get('user'), requestedTech)
+  if (scopedTech !== undefined) {
+    conditions.push(eq(timeOff.technicianId, scopedTech))
   }
 
   if (from !== undefined) {
