@@ -1,12 +1,25 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { and, eq, gte, lte } from 'drizzle-orm'
 import { z } from 'zod'
 import { getDb } from '../db/client'
 import { timeOff, workingHours } from '../db/schema'
 import type { Env } from '../app'
 import { scopeTechnicianId } from '../lib/rbac'
+import { requireAuth } from '../middleware/auth'
+import { AUTH_FORBIDDEN } from '../lib/errors'
 
 const app = new Hono<Env>()
+
+// Bridge Context Bindings-invariance (see bookings.ts / Task 15), then enforce
+// admin-only for schedule-config mutations. GET reads keep their RBAC scoping.
+function requireAdmin(c: Context<Env, string>) {
+  const user = requireAuth(c as unknown as Parameters<typeof requireAuth>[0])
+  if (user.role !== 'admin') {
+    throw AUTH_FORBIDDEN('admin only', { context: { role: user.role } })
+  }
+  return user
+}
 
 // ---------------------------------------------------------------------------
 // schemas
@@ -77,6 +90,7 @@ app.get('/working-hours', async (c) => {
 
 // PUT /working-hours/:technicianId — replace the whole weekly schedule
 app.put('/working-hours/:technicianId', async (c) => {
+  requireAdmin(c)
   const technicianId = Number(c.req.param('technicianId'))
   if (!Number.isInteger(technicianId)) {
     return c.json({ error: 'technicianId must be an integer' }, 400)
@@ -162,6 +176,7 @@ app.get('/time-off', async (c) => {
 
 // POST /time-off
 app.post('/time-off', async (c) => {
+  requireAdmin(c)
   const body = await c.req.json().catch(() => null)
   const parsed = createTimeOffSchema.safeParse(body)
   if (!parsed.success) {
@@ -185,6 +200,7 @@ app.post('/time-off', async (c) => {
 
 // DELETE /time-off/:id
 app.delete('/time-off/:id', async (c) => {
+  requireAdmin(c)
   const id = Number(c.req.param('id'))
   if (!Number.isInteger(id)) {
     return c.json({ error: 'id must be an integer' }, 400)

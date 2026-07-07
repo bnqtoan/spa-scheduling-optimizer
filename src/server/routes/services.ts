@@ -1,11 +1,24 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import type { Env } from '../app'
 import { getDb } from '../db/client'
 import { services, skills } from '../db/schema'
+import { requireAuth } from '../middleware/auth'
+import { AUTH_FORBIDDEN } from '../lib/errors'
 
 const app = new Hono<Env>()
+
+// Bridge Context Bindings-invariance (see bookings.ts / Task 15), then enforce
+// admin-only for catalog mutations.
+function requireAdmin(c: Context<Env, string>) {
+  const user = requireAuth(c as unknown as Parameters<typeof requireAuth>[0])
+  if (user.role !== 'admin') {
+    throw AUTH_FORBIDDEN('admin only', { context: { role: user.role } })
+  }
+  return user
+}
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -88,6 +101,7 @@ app.get('/:id', async (c) => {
 // POST /
 // ---------------------------------------------------------------------------
 app.post('/', async (c) => {
+  requireAdmin(c)
   const body = await c.req.json().catch(() => null)
   const parsed = createServiceSchema.safeParse(body)
   if (!parsed.success) {
@@ -120,6 +134,7 @@ app.post('/', async (c) => {
 // PATCH /:id
 // ---------------------------------------------------------------------------
 app.patch('/:id', async (c) => {
+  requireAdmin(c)
   const parsedId = idParamSchema.safeParse(c.req.param('id'))
   if (!parsedId.success) {
     return c.json({ error: 'invalid id' }, 400)
@@ -172,6 +187,7 @@ app.patch('/:id', async (c) => {
 // is idempotent (204 both times) as long as the service exists.
 // ---------------------------------------------------------------------------
 app.delete('/:id', async (c) => {
+  requireAdmin(c)
   const parsedId = idParamSchema.safeParse(c.req.param('id'))
   if (!parsedId.success) {
     return c.json({ error: 'invalid id' }, 400)
