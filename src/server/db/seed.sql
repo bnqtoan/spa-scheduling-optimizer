@@ -29,12 +29,12 @@ INSERT INTO skills (id, name) VALUES
 -- ---------------------------------------------------------------------------
 -- technicians (1 Lan Anh, 2 Mai Chi, 3 Thu Hà, 4 Minh Thư, 5 Kim Ngân)
 -- ---------------------------------------------------------------------------
-INSERT INTO technicians (id, name, avatar_url, active) VALUES
-  (1, 'Lan Anh', NULL, 1),
-  (2, 'Mai Chi', NULL, 1),
-  (3, 'Thu Hà', NULL, 1),
-  (4, 'Minh Thư', NULL, 1),
-  (5, 'Kim Ngân', NULL, 1);
+INSERT INTO technicians (id, name, avatar_url, email, active) VALUES
+  (1, 'Lan Anh', NULL, 'lananh@example.com', 1),
+  (2, 'Mai Chi', NULL, 'maichi@example.com', 1),
+  (3, 'Thu Hà', NULL, 'thuha@example.com', 1),
+  (4, 'Minh Thư', NULL, 'minhthu@example.com', 1),
+  (5, 'Kim Ngân', NULL, 'kimngan@example.com', 1);
 
 -- ---------------------------------------------------------------------------
 -- technician_skills

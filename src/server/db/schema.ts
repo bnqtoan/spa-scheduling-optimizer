@@ -8,6 +8,7 @@ export const technicians = sqliteTable('technicians', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   name: text('name').notNull(),
   avatarUrl: text('avatar_url'),
+  email: text('email'), // Phase 2 — notification recipient; nullable (existing techs may lack one)
   active: integer('active', { mode: 'boolean' }).notNull().default(true),
   createdAt: text('created_at')
     .notNull()

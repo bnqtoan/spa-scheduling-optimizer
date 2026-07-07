@@ -14,10 +14,11 @@ import { Hono } from 'hono'
 import { and, eq } from 'drizzle-orm'
 import type { Env } from '../app'
 import { getDb } from '../db/client'
-import { bookings, payments } from '../db/schema'
+import { bookings, payments, services, technicians } from '../db/schema'
 import { AUTH_UNAUTHORIZED, logStructured } from '../lib/errors'
 import { writeAudit } from '../lib/audit'
 import { matchWebhookToPayment, type SepayWebhookPayload } from '../lib/payment'
+import { renderPaymentPaidEmail, sendEmail } from '../lib/email'
 
 const app = new Hono<Env>()
 
@@ -127,7 +128,32 @@ app.post('/sepay', async (c) => {
     context: { paymentRef: match.paymentRef, bookingId: match.bookingId, amount: match.amount, sepayTxId },
   })
 
-  // Task 18 hook: fire booking-paid email here.
+  // Task 18: best-effort payment-paid email to the assigned technician.
+  // Fetch booking+service+technician fresh (webhook has no c.executionCtx
+  // guarantee issue — Workers always provide it — but we still guard
+  // defensively and never let email failure affect the 200 SePay response).
+  const [full] = await db
+    .select({
+      booking: bookings,
+      serviceName: services.name,
+      technicianName: technicians.name,
+      technicianEmail: technicians.email,
+    })
+    .from(bookings)
+    .leftJoin(services, eq(bookings.serviceId, services.id))
+    .leftJoin(technicians, eq(bookings.technicianId, technicians.id))
+    .where(eq(bookings.id, match.bookingId))
+    .limit(1)
+
+  if (full?.technicianEmail && full.serviceName) {
+    const { subject, html } = renderPaymentPaidEmail(full.booking, { name: full.serviceName })
+    const task = sendEmail(c.env, { to: full.technicianEmail, subject, html }).then(() => undefined)
+    if (c.executionCtx?.waitUntil) {
+      c.executionCtx.waitUntil(task)
+    } else {
+      await task.catch(() => undefined)
+    }
+  }
 
   return c.json({ success: true })
 })

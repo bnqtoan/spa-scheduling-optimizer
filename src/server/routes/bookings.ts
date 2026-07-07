@@ -15,6 +15,7 @@ import {
   workingHours,
 } from '../db/schema'
 import { buildVietQrUrl, generatePaymentRef } from '../lib/payment'
+import { renderNewBookingEmail, sendEmail } from '../lib/email'
 import { contains, overlaps, weekdayOf, type Interval } from '../lib/slots'
 import {
   AUTH_FORBIDDEN,
@@ -261,6 +262,31 @@ async function createPaymentForBooking(
 }
 
 // ---------------------------------------------------------------------------
+// notifyNewBooking — best-effort email to the assigned technician right after
+// a booking is created. Fire-and-forget: scheduled via c.executionCtx.waitUntil
+// so the HTTP response is never delayed by (or fails because of) email
+// delivery; in a dev context without waitUntil (shouldn't happen on Workers,
+// but defensive), we await inline and swallow any error. sendEmail itself
+// never throws (see lib/email.ts), this try/catch is belt-and-suspenders.
+// ---------------------------------------------------------------------------
+async function notifyNewBooking(
+  c: Context<Env, string>,
+  booking: typeof bookings.$inferSelect,
+  service: { name: string },
+  technician: { name: string; email: string | null } | null,
+): Promise<void> {
+  if (!technician?.email) return
+  const email = technician.email
+  const { subject, html } = renderNewBookingEmail(booking, service, { name: technician.name })
+  const task = sendEmail(c.env, { to: email, subject, html }).then(() => undefined)
+  if (c.executionCtx?.waitUntil) {
+    c.executionCtx.waitUntil(task)
+  } else {
+    await task.catch(() => undefined)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // GET / — list, filterable by ?date=&technicianId=&status=
 // Excludes cancelled by default unless an explicit status is requested.
 // ---------------------------------------------------------------------------
@@ -408,6 +434,18 @@ app.post('/', async (c) => {
       }
 
       const [row] = await bookingsWithJoins(db).where(eq(bookings.id, created.id)).limit(1)
+
+      // Task 18: best-effort new-booking email to the assigned technician.
+      // Fetched separately (not via bookingSelection) since the shared join
+      // only projects {id, name} and we need email too; kept a tiny extra
+      // query rather than widening a selection several other routes reuse.
+      const [techForEmail] = await db
+        .select({ name: technicians.name, email: technicians.email })
+        .from(technicians)
+        .where(eq(technicians.id, created.technicianId))
+        .limit(1)
+      await notifyNewBooking(c, created, { name: service.name }, techForEmail ?? null)
+
       return c.json(row ? flatten(row) : created, 201)
     } catch (err) {
       // Unique collision on code -> retry with next seq. Anything else -> rethrow.

@@ -18,6 +18,9 @@ export type Env = {
     SEPAY_BANK: string
     SEPAY_ACCOUNT_NUMBER: string
     SEPAY_ACCOUNT_NAME: string
+    // Phase 2 — Resend email notifications (set via wrangler secret / .dev.vars)
+    RESEND_API_KEY: string
+    EMAIL_FROM: string
   }
   Variables: AuthVariables
 }
