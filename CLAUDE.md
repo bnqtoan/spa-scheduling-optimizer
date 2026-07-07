@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Web app for a spa to manage technician (KTV) schedules and optimize customer booking. PRD: `Spa Scheduling Optimizer.pdf`. Core feature = **Suggest Available Slots** (scored slot suggestions). UI language: Vietnamese. Mockup reference is the PDF.
 
+**Architecture reference: `docs/ARCHITECTURE.md`** — problem/business outcome, domain model (ER), tech architecture + data-flow diagrams (mermaid). Read it for the big picture; keep it in sync when domain model, scoring, or data flow changes.
+
 ### Stack
 - **Frontend** (`src/client`): React + Vite + TanStack Router (code-based, `src/client/router.tsx`) + TanStack Query + Tailwind v4 + shadcn/ui + FullCalendar (resource-timeline). Same-origin API via `/api` (Vite dev proxy).
 - **Backend** (`src/server`): single Cloudflare Worker — Hono handles `/api/*`, all other paths serve the built SPA via the ASSETS binding (`src/server/index.ts`). Drizzle ORM + Cloudflare D1 + Zod.
