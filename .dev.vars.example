@@ -1,0 +1,16 @@
+# SePay payment secrets (Phase 2). Copy to `.dev.vars` for local `wrangler dev`,
+# and set in production via `wrangler secret put <NAME>`.
+# .dev.vars is gitignored — never commit real values.
+
+# Token SePay sends as `Authorization: Apikey <token>` to our webhook.
+SEPAY_WEBHOOK_TOKEN=devtoken
+
+# Bank + account the VietQR pays into (shown to the customer, encoded in the QR).
+SEPAY_BANK=MBBank
+SEPAY_ACCOUNT_NUMBER=0123456789
+SEPAY_ACCOUNT_NAME=SPA SCHEDULING OPTIMIZER
+
+# Resend email notifications (Phase 2). Leave RESEND_API_KEY empty in dev to
+# no-op (sendEmail logs and returns {ok:false} without crashing).
+RESEND_API_KEY=
+EMAIL_FROM=SPA Scheduling <onboarding@resend.dev>

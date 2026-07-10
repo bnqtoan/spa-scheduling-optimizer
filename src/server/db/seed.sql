@@ -1,6 +1,11 @@
 -- Seed data mirroring the mockup. Idempotent: clears dependent tables first (child -> parent order),
 -- then re-inserts. Safe to re-run against local D1.
 
+-- Phase 2 tables cleared first (child -> parent). audit_log & payments reference bookings; sessions -> users.
+DELETE FROM audit_log;
+DELETE FROM payments;
+DELETE FROM sessions;
+DELETE FROM users;
 DELETE FROM bookings;
 DELETE FROM time_off;
 DELETE FROM working_hours;
@@ -10,7 +15,7 @@ DELETE FROM skills;
 DELETE FROM technicians;
 
 -- Reset autoincrement counters so ids are stable across re-seeds.
-DELETE FROM sqlite_sequence WHERE name IN ('bookings','time_off','working_hours','technician_skills','services','skills','technicians');
+DELETE FROM sqlite_sequence WHERE name IN ('audit_log','payments','users','bookings','time_off','working_hours','technician_skills','services','skills','technicians');
 
 -- ---------------------------------------------------------------------------
 -- skills (id assigned in insertion order: 1 Massage, 2 Facial, 3 Nail, 4 Gội đầu)
@@ -24,12 +29,12 @@ INSERT INTO skills (id, name) VALUES
 -- ---------------------------------------------------------------------------
 -- technicians (1 Lan Anh, 2 Mai Chi, 3 Thu Hà, 4 Minh Thư, 5 Kim Ngân)
 -- ---------------------------------------------------------------------------
-INSERT INTO technicians (id, name, avatar_url, active) VALUES
-  (1, 'Lan Anh', NULL, 1),
-  (2, 'Mai Chi', NULL, 1),
-  (3, 'Thu Hà', NULL, 1),
-  (4, 'Minh Thư', NULL, 1),
-  (5, 'Kim Ngân', NULL, 1);
+INSERT INTO technicians (id, name, avatar_url, email, active) VALUES
+  (1, 'Lan Anh', NULL, 'lananh@example.com', 1),
+  (2, 'Mai Chi', NULL, 'maichi@example.com', 1),
+  (3, 'Thu Hà', NULL, 'thuha@example.com', 1),
+  (4, 'Minh Thư', NULL, 'minhthu@example.com', 1),
+  (5, 'Kim Ngân', NULL, 'kimngan@example.com', 1);
 
 -- ---------------------------------------------------------------------------
 -- technician_skills
@@ -78,3 +83,20 @@ INSERT INTO bookings (code, technician_id, service_id, customer_name, customer_p
   ('SPA260702-0005', 3, 2, 'Vũ Thị Lan',       '0901111115', NULL,         '2026-07-02', 600, 690, 'scheduled'),  -- Thu Hà 10:00-11:30
   ('SPA260702-0006', 4, 5, 'Đặng Văn Nam',     '0901111116', NULL,         '2026-07-02', 570, 630, 'completed'),  -- Minh Thư 09:30-10:30
   ('SPA260702-0007', 5, 6, 'Hoàng Thị Yến',    '0901111117', NULL,         '2026-07-02', 690, 735, 'scheduled');  -- Kim Ngân 11:30-12:15
+
+-- ---------------------------------------------------------------------------
+-- users (Phase 2 auth). ids 1..7: 1 admin, 1 receptionist, 5 technician users
+-- mapped to technicians 1..5. Default password for all = 'spa123'.
+-- password_hash below is the real PBKDF2/SHA-256 hash of 'spa123'
+-- (pbkdf2$<iters>$<saltB64>$<hashB64>, produced by src/server/lib/auth.ts
+-- hashPassword). Salt is random per hash; one shared precomputed string for all
+-- users is fine (each still verifies against 'spa123').
+-- ---------------------------------------------------------------------------
+INSERT INTO users (id, username, password_hash, role, technician_id, active) VALUES
+  (1, 'admin', 'pbkdf2$100000$6xokYqdoV1wxMvLb1QgoMw==$PFLehbDcBvILzj3XuIyXwy0ZvaqvN6YCOn9/R8UBBoA=', 'admin',        NULL, 1),
+  (2, 'letan', 'pbkdf2$100000$6xokYqdoV1wxMvLb1QgoMw==$PFLehbDcBvILzj3XuIyXwy0ZvaqvN6YCOn9/R8UBBoA=', 'receptionist', NULL, 1),
+  (3, 'ktv1',  'pbkdf2$100000$6xokYqdoV1wxMvLb1QgoMw==$PFLehbDcBvILzj3XuIyXwy0ZvaqvN6YCOn9/R8UBBoA=', 'technician',   1,    1),
+  (4, 'ktv2',  'pbkdf2$100000$6xokYqdoV1wxMvLb1QgoMw==$PFLehbDcBvILzj3XuIyXwy0ZvaqvN6YCOn9/R8UBBoA=', 'technician',   2,    1),
+  (5, 'ktv3',  'pbkdf2$100000$6xokYqdoV1wxMvLb1QgoMw==$PFLehbDcBvILzj3XuIyXwy0ZvaqvN6YCOn9/R8UBBoA=', 'technician',   3,    1),
+  (6, 'ktv4',  'pbkdf2$100000$6xokYqdoV1wxMvLb1QgoMw==$PFLehbDcBvILzj3XuIyXwy0ZvaqvN6YCOn9/R8UBBoA=', 'technician',   4,    1),
+  (7, 'ktv5',  'pbkdf2$100000$6xokYqdoV1wxMvLb1QgoMw==$PFLehbDcBvILzj3XuIyXwy0ZvaqvN6YCOn9/R8UBBoA=', 'technician',   5,    1);

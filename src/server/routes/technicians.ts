@@ -1,9 +1,24 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import type { Env } from '../app'
 import { getDb } from '../db/client'
 import { skills, technicianSkills, technicians } from '../db/schema'
+import { requireAuth } from '../middleware/auth'
+import { AUTH_FORBIDDEN } from '../lib/errors'
+
+// requireAuth is typed against the middleware's minimal AuthEnv (Bindings={DB});
+// our app Env additionally has ASSETS and Hono's Context is invariant on
+// Bindings, so a direct call doesn't type-check. This thin adapter bridges the
+// two (mirrors bookings.ts, Task 15). Then we enforce admin-only for mutations.
+function requireAdmin(c: Context<Env, string>) {
+  const user = requireAuth(c as unknown as Parameters<typeof requireAuth>[0])
+  if (user.role !== 'admin') {
+    throw AUTH_FORBIDDEN('admin only', { context: { role: user.role } })
+  }
+  return user
+}
 
 // ---------------------------------------------------------------------------
 // Zod schemas
@@ -80,6 +95,7 @@ r.get('/:id', async (c) => {
 })
 
 r.post('/', async (c) => {
+  requireAdmin(c)
   const body = await c.req.json().catch(() => null)
   const parsed = createTechnicianSchema.safeParse(body)
   if (!parsed.success) return c.json({ error: parsed.error.issues }, 400)
@@ -111,6 +127,7 @@ r.post('/', async (c) => {
 })
 
 r.patch('/:id', async (c) => {
+  requireAdmin(c)
   const id = Number(c.req.param('id'))
   if (!Number.isInteger(id)) return c.json({ error: 'Invalid id' }, 400)
 
@@ -155,6 +172,7 @@ r.patch('/:id', async (c) => {
 })
 
 r.delete('/:id', async (c) => {
+  requireAdmin(c)
   const id = Number(c.req.param('id'))
   if (!Number.isInteger(id)) return c.json({ error: 'Invalid id' }, 400)
 
@@ -184,6 +202,7 @@ skillsRoute.get('/', async (c) => {
 })
 
 skillsRoute.post('/', async (c) => {
+  requireAdmin(c)
   const body = await c.req.json().catch(() => null)
   const parsed = createSkillSchema.safeParse(body)
   if (!parsed.success) return c.json({ error: parsed.error.issues }, 400)
@@ -194,6 +213,7 @@ skillsRoute.post('/', async (c) => {
 })
 
 skillsRoute.delete('/:id', async (c) => {
+  requireAdmin(c)
   const id = Number(c.req.param('id'))
   if (!Number.isInteger(id)) return c.json({ error: 'Invalid id' }, 400)
 

@@ -37,6 +37,8 @@ export interface Service {
   skill: Skill | null
 }
 
+export type PaymentStatus = 'unpaid' | 'paid'
+
 export interface Booking {
   id: number
   code: string
@@ -44,7 +46,10 @@ export interface Booking {
   startMin: number
   endMin: number
   status: BookingStatus
+  paymentStatus: PaymentStatus
   customerName: string
+  customerPhone?: string
+  note?: string | null
   technician: { id: number; name: string }
   service: { id: number; name: string; durationMin: number }
 }
@@ -72,12 +77,22 @@ export interface TimeOffEntry {
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /** Stable error code (e.g. 'AUTH_UNAUTHORIZED') when the server used the
+   * AppError taxonomy ({error:{code,category,message}}); undefined for the
+   * legacy {error: string} shape some older routes still use. */
+  code?: string
+  constructor(status: number, message: string, code?: string) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.code = code
   }
 }
+
+/** Fired whenever a request comes back 401 (session missing/expired), so
+ * guarded routes/shell can react (e.g. redirect to /login) without every
+ * caller having to check err.status individually. */
+export const AUTH_EVENT_UNAUTHORIZED = 'api:unauthorized'
 
 /** GET/POST/... against `/api${path}`, JSON in/out, throws ApiError on non-2xx. */
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -87,13 +102,24 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   })
   if (!res.ok) {
     let message = `Request failed (${res.status})`
+    let code: string | undefined
     try {
-      const body = (await res.json()) as { error?: string }
-      if (body?.error) message = typeof body.error === 'string' ? body.error : message
+      const body = (await res.json()) as { error?: string | { code?: string; message?: string } }
+      if (body?.error) {
+        if (typeof body.error === 'string') {
+          message = body.error
+        } else {
+          message = body.error.message ?? message
+          code = body.error.code
+        }
+      }
     } catch {
       /* non-JSON error body */
     }
-    throw new ApiError(res.status, message)
+    if (res.status === 401 && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(AUTH_EVENT_UNAUTHORIZED, { detail: { path } }))
+    }
+    throw new ApiError(res.status, message, code)
   }
   if (res.status === 204) return undefined as T
   return (await res.json()) as T
@@ -365,5 +391,56 @@ export function useDeleteTimeOff() {
     mutationFn: (id: number) =>
       apiFetch<{ ok: true }>(`/schedule/time-off/${id}`, { method: 'DELETE' }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['time-off'] }),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Booking mutations (Task 22) — cancel / update / single-booking lookup.
+// The bookings list is keyed per-date; on success we invalidate every
+// ['bookings', ...] query since we don't always know which date(s) a
+// reschedule touches (old date vs new date).
+// ---------------------------------------------------------------------------
+
+function invalidateBookings(queryClient: ReturnType<typeof useQueryClient>) {
+  queryClient.invalidateQueries({ queryKey: ['bookings'] })
+}
+
+/** Single booking by id (joined), for the detail dialog. */
+export function useBooking(id: number | null): UseQueryResult<Booking, ApiError> {
+  return useQuery({
+    queryKey: ['bookings', 'detail', id],
+    queryFn: () => apiFetch<Booking>(`/bookings/${id}`),
+    enabled: id !== null,
+  })
+}
+
+/** Cancel (soft) a booking. DELETE /bookings/:id. */
+export function useCancelBooking() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ ok: true; status: 'cancelled' }>(`/bookings/${id}`, { method: 'DELETE' }),
+    onSuccess: () => invalidateBookings(queryClient),
+  })
+}
+
+export interface UpdateBookingInput {
+  status?: BookingStatus
+  technicianId?: number
+  serviceId?: number
+  date?: string
+  startMin?: number
+  customerName?: string
+  customerPhone?: string
+  note?: string | null
+}
+
+/** Status change and/or reschedule/edit. PATCH /bookings/:id. */
+export function useUpdateBooking() {
+  const queryClient = useQueryClient()
+  return useMutation<Booking, ApiError, UpdateBookingInput & { id: number }>({
+    mutationFn: ({ id, ...input }) =>
+      apiFetch<Booking>(`/bookings/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
+    onSuccess: () => invalidateBookings(queryClient),
   })
 }

@@ -10,9 +10,11 @@ import { DateNav } from '@/components/dashboard/date-nav'
 import { TimelineCalendar } from '@/components/dashboard/timeline-calendar'
 import { StatsCard, computeStats } from '@/components/dashboard/stats-card'
 import { UpcomingList } from '@/components/dashboard/upcoming-list'
+import { BookingDialog } from '@/components/admin/booking-dialog'
 
 export function DashboardPage() {
   const [date, setDate] = useState(todayISO())
+  const [detailBookingId, setDetailBookingId] = useState<number | null>(null)
 
   const techniciansQuery = useTechnicians()
   const bookingsQuery = useBookings(date)
@@ -54,7 +56,12 @@ export function DashboardPage() {
               ) : technicians.length === 0 ? (
                 <EmptyState message="Chưa có kỹ thuật viên nào." />
               ) : (
-                <TimelineCalendar date={date} technicians={technicians} bookings={bookings} />
+                <TimelineCalendar
+                  date={date}
+                  technicians={technicians}
+                  bookings={bookings}
+                  onEventClick={setDetailBookingId}
+                />
               )}
             </CardContent>
           </Card>
@@ -66,6 +73,14 @@ export function DashboardPage() {
           </div>
         </div>
       </main>
+
+      <BookingDialog
+        bookingId={detailBookingId}
+        open={detailBookingId !== null}
+        onOpenChange={(open) => {
+          if (!open) setDetailBookingId(null)
+        }}
+      />
     </>
   )
 }

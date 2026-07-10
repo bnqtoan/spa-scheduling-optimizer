@@ -8,6 +8,7 @@ export const technicians = sqliteTable('technicians', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   name: text('name').notNull(),
   avatarUrl: text('avatar_url'),
+  email: text('email'), // Phase 2 — notification recipient; nullable (existing techs may lack one)
   active: integer('active', { mode: 'boolean' }).notNull().default(true),
   createdAt: text('created_at')
     .notNull()
@@ -127,6 +128,9 @@ export const timeOffRelations = relations(timeOff, ({ one }) => ({
 export const bookingStatusValues = ['scheduled', 'completed', 'cancelled'] as const
 export type BookingStatus = (typeof bookingStatusValues)[number]
 
+export const paymentStatusValues = ['unpaid', 'paid'] as const
+export type PaymentStatus = (typeof paymentStatusValues)[number]
+
 export const bookings = sqliteTable('bookings', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   code: text('code').notNull(), // e.g. SPA240525-0012
@@ -143,12 +147,16 @@ export const bookings = sqliteTable('bookings', {
   startMin: integer('start_min').notNull(),
   endMin: integer('end_min').notNull(),
   status: text('status', { enum: bookingStatusValues }).notNull().default('scheduled'),
+  // Phase 2 payment columns (denormalized for fast list queries)
+  paymentStatus: text('payment_status', { enum: paymentStatusValues }).notNull().default('unpaid'),
+  paymentRef: text('payment_ref'), // denormalized; also stored in payments — for QR display + quick lookup
+  createdByUserId: integer('created_by_user_id').references(() => users.id), // null = customer
   createdAt: text('created_at')
     .notNull()
     .default(sql`(current_timestamp)`),
 }, (t) => [uniqueIndex('bookings_code_unique').on(t.code)])
 
-export const bookingsRelations = relations(bookings, ({ one }) => ({
+export const bookingsRelations = relations(bookings, ({ one, many }) => ({
   technician: one(technicians, {
     fields: [bookings.technicianId],
     references: [technicians.id],
@@ -156,6 +164,121 @@ export const bookingsRelations = relations(bookings, ({ one }) => ({
   service: one(services, {
     fields: [bookings.serviceId],
     references: [services.id],
+  }),
+  createdByUser: one(users, {
+    fields: [bookings.createdByUserId],
+    references: [users.id],
+  }),
+  payments: many(payments),
+  auditLogs: many(auditLog),
+}))
+
+// ---------------------------------------------------------------------------
+// users (Phase 2 — auth)
+// ---------------------------------------------------------------------------
+export const userRoleValues = ['admin', 'receptionist', 'technician'] as const
+export type UserRole = (typeof userRoleValues)[number]
+
+export const users = sqliteTable('users', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  username: text('username').notNull(),
+  passwordHash: text('password_hash').notNull(),
+  role: text('role', { enum: userRoleValues }).notNull(),
+  technicianId: integer('technician_id').references(() => technicians.id), // only set for role=technician
+  active: integer('active', { mode: 'boolean' }).notNull().default(true),
+  createdAt: text('created_at')
+    .notNull()
+    .default(sql`(current_timestamp)`),
+}, (t) => [uniqueIndex('users_username_unique').on(t.username)])
+
+export const usersRelations = relations(users, ({ one, many }) => ({
+  technician: one(technicians, {
+    fields: [users.technicianId],
+    references: [technicians.id],
+  }),
+  sessions: many(sessions),
+}))
+
+// ---------------------------------------------------------------------------
+// sessions (Phase 2 — auth; id is an opaque app-set token, NOT autoincrement)
+// ---------------------------------------------------------------------------
+export const sessions = sqliteTable('sessions', {
+  id: text('id').primaryKey(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  expiresAt: integer('expires_at').notNull(), // unix epoch seconds
+  createdAt: text('created_at')
+    .notNull()
+    .default(sql`(current_timestamp)`),
+})
+
+export const sessionsRelations = relations(sessions, ({ one }) => ({
+  user: one(users, {
+    fields: [sessions.userId],
+    references: [users.id],
+  }),
+}))
+
+// ---------------------------------------------------------------------------
+// payments (Phase 2 — SePay / cash)
+// ---------------------------------------------------------------------------
+export const paymentMethodValues = ['sepay', 'cash'] as const
+export type PaymentMethod = (typeof paymentMethodValues)[number]
+
+export const paymentTxStatusValues = ['pending', 'paid', 'failed'] as const
+export type PaymentTxStatus = (typeof paymentTxStatusValues)[number]
+
+export const payments = sqliteTable('payments', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  bookingId: integer('booking_id')
+    .notNull()
+    .references(() => bookings.id),
+  paymentRef: text('payment_ref').notNull(), // A-Z0-9 only, e.g. SPA0012AB — the VietQR transfer content
+  amount: integer('amount').notNull(), // VND
+  method: text('method', { enum: paymentMethodValues }).notNull().default('sepay'),
+  status: text('status', { enum: paymentTxStatusValues }).notNull().default('pending'),
+  sepayTxId: text('sepay_tx_id'), // SePay transaction id from webhook
+  rawPayload: text('raw_payload'), // JSON string of the SePay webhook body, for reconciliation
+  paidAt: text('paid_at'),
+  createdAt: text('created_at')
+    .notNull()
+    .default(sql`(current_timestamp)`),
+}, (t) => [uniqueIndex('payments_payment_ref_unique').on(t.paymentRef)])
+
+export const paymentsRelations = relations(payments, ({ one }) => ({
+  booking: one(bookings, {
+    fields: [payments.bookingId],
+    references: [bookings.id],
+  }),
+}))
+
+// ---------------------------------------------------------------------------
+// audit_log (Phase 2)
+// ---------------------------------------------------------------------------
+export const auditActionValues = ['create', 'update', 'cancel', 'pay'] as const
+export type AuditAction = (typeof auditActionValues)[number]
+
+export const auditLog = sqliteTable('audit_log', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  bookingId: integer('booking_id').references(() => bookings.id),
+  userId: integer('user_id').references(() => users.id), // null = customer self-service
+  action: text('action', { enum: auditActionValues }).notNull(),
+  oldValues: text('old_values'), // JSON string
+  newValues: text('new_values'), // JSON string
+  createdAt: text('created_at')
+    .notNull()
+    .default(sql`(current_timestamp)`),
+})
+
+export const auditLogRelations = relations(auditLog, ({ one }) => ({
+  booking: one(bookings, {
+    fields: [auditLog.bookingId],
+    references: [bookings.id],
+  }),
+  user: one(users, {
+    fields: [auditLog.userId],
+    references: [users.id],
   }),
 }))
 
@@ -182,3 +305,15 @@ export type NewTimeOff = typeof timeOff.$inferInsert
 
 export type Booking = typeof bookings.$inferSelect
 export type NewBooking = typeof bookings.$inferInsert
+
+export type User = typeof users.$inferSelect
+export type NewUser = typeof users.$inferInsert
+
+export type Session = typeof sessions.$inferSelect
+export type NewSession = typeof sessions.$inferInsert
+
+export type Payment = typeof payments.$inferSelect
+export type NewPayment = typeof payments.$inferInsert
+
+export type AuditLog = typeof auditLog.$inferSelect
+export type NewAuditLog = typeof auditLog.$inferInsert
